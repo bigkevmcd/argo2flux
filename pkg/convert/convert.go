@@ -8,6 +8,7 @@ import (
 	argocdv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -73,4 +74,11 @@ func translateTargetRevision(s string) string {
 		return ""
 	}
 	return s
+}
+
+func loadSecretForRepo(ctx context.Context, cl client.Client) (*corev1.Secret, error) {
+	secret := &corev1.Secret{}
+	if err := cl.Get(ctx, name, app); err != nil {
+		return nil, fmt.Errorf("failed to get Application %s: %w", name, err)
+	}
 }

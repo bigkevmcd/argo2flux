@@ -7,11 +7,13 @@ import (
 
 	argocdv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	fluxmeta "github.com/fluxcd/pkg/apis/meta"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
@@ -66,7 +68,75 @@ func TestConvertToKustomization(t *testing.T) {
 	}
 }
 
+func TestConvertToKustomization_with_auth(t *testing.T) {
+	app := readApplication(t, "testdata/application_with_ssh_repo.yaml")
+	secret := readSecret(t, "testdata/private_key_secret.yaml")
+	fc := newFakeClient(t, app, secret)
+
+	objs, err := ConvertToKustomization(context.TODO(), fc, client.ObjectKeyFromObject(app))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []runtime.Object{
+		&corev1.Secret{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "v1",
+				Kind:       "Secret",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "guestbook-secret",
+				Namespace: "argocd",
+			},
+			Data: map[string][]byte{
+				"identity":    []byte("testing"),
+				"known_hosts": []byte("testing"),
+			},
+		},
+		&sourcev1.GitRepository{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "source.toolkit.fluxcd.io/v1beta2",
+				Kind:       "GitRepository",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "guestbook",
+				Namespace: "argocd",
+			},
+			Spec: sourcev1.GitRepositorySpec{
+				Interval: metav1.Duration{Duration: defaultInterval},
+				URL:      "git@github.example.com:demo-org/private-org",
+				SecretRef: &fluxmeta.LocalObjectReference{
+					Name: "guestbook-secret",
+				},
+				Reference: &sourcev1.GitRepositoryRef{},
+			},
+		},
+		&kustomizev1.Kustomization{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "kustomize.toolkit.fluxcd.io/v1beta2",
+				Kind:       "Kustomization",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "guestbook",
+				Namespace: "argocd",
+			},
+			Spec: kustomizev1.KustomizationSpec{
+				TargetNamespace: "argocd",
+				Interval:        metav1.Duration{Duration: defaultInterval},
+				SourceRef: kustomizev1.CrossNamespaceSourceReference{
+					Kind: "GitRepository",
+					Name: "guestbook",
+				},
+				Path: "guestbook",
+			},
+		},
+	}
+	if diff := cmp.Diff(want, objs); diff != "" {
+		t.Fatalf("failed to convert:\n%s", diff)
+	}
+}
+
 func readApplication(t *testing.T, filename string) *argocdv1.Application {
+	t.Helper()
 	b, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatal(err)
@@ -79,12 +149,30 @@ func readApplication(t *testing.T, filename string) *argocdv1.Application {
 	return app
 }
 
+func readSecret(t *testing.T, filename string) *corev1.Secret {
+	t.Helper()
+	b, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := &corev1.Secret{}
+	if err := yaml.Unmarshal(b, secret); err != nil {
+		t.Fatal(err)
+	}
+
+	return secret
+}
+
 func newFakeClient(t *testing.T, objs ...runtime.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := argocdv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(objs...).
